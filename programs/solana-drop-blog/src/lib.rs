@@ -1,5 +1,4 @@
 use anchor_lang::prelude::*;
-use anchor_lang::error::Error;
 use anchor_spl::token::{self, MintTo, Transfer};
 use anchor_spl::token_interface::{Mint, TokenAccount, TokenInterface};
 
@@ -17,8 +16,8 @@ pub mod solana_drop_blog {
 
     pub fn initialize(
         ctx: Context<Initialize>,
-        start_slot: u64,
-        end_slot: u64,
+        start_time: u64,
+        end_time: u64,
         amount_claim: u64,
     ) -> Result<()> {
         msg!("Instruction: Initialize");
@@ -26,11 +25,27 @@ pub mod solana_drop_blog {
         let pool_info = &mut ctx.accounts.pool_info;
 
         pool_info.admin = ctx.accounts.admin.key();
-        pool_info.start_slot = start_slot;
-        pool_info.end_slot = end_slot;
+        pool_info.start_time = start_time;
+        pool_info.end_time = end_time;
         pool_info.amount_claim = amount_claim;
         pool_info.token = ctx.accounts.airdrop_token.key();
 
+        Ok(())
+    }
+
+    pub fn add_items(ctx: Context<AddItem>, users_to_add: Vec<Pubkey>) -> Result<()> {
+        let white_list_info = &mut ctx.accounts.white_list_info;
+        require!(ctx.accounts.admin.key() == ctx.accounts.pool_info.admin, ErrorCode::NotEligible);
+        white_list_info.items.extend(users_to_add);
+        Ok(())
+    }
+
+    pub fn remove_item(ctx: Context<RemoveItem>, user: Pubkey) -> Result<()> {
+        let white_list_info = &mut ctx.accounts.white_list_info;
+        require!(ctx.accounts.admin.key() == ctx.accounts.pool_info.admin, ErrorCode::NotEligible);
+        if let Some(index) = white_list_info.items.iter().position(|&x| x == user) {
+            white_list_info.items.remove(index);
+        }
         Ok(())
     }
 
@@ -60,7 +75,7 @@ pub mod solana_drop_blog {
         let pool_info = &mut ctx.accounts.pool_info;
         let clock = Clock::get()?;
 
-        if (pool_info.total_deposit > pool_info.total_claim) && (pool_info.end_slot > clock.slot) {
+        if (pool_info.total_deposit > pool_info.total_claim) && (pool_info.end_time > clock.unix_timestamp.try_into().unwrap()) {
             let cpi_accounts = Transfer {
                 from: ctx.accounts.admin_drop_wallet.to_account_info(),
                 to: ctx.accounts.admin.to_account_info(),
@@ -77,14 +92,14 @@ pub mod solana_drop_blog {
 
     pub fn claim_reward(ctx: Context<ClaimReward>) -> Result<()> {
         msg!("Instruction: Claim Reward");
-        if !is_whitelisted(&ctx.accounts.white_list, &ctx.accounts.user.key()) {
+        if !is_whitelisted(ctx.accounts.white_list.items, ctx.accounts.user.key()) {
             return Err(ErrorCode::NotEligible.into());
         }
 
         let pool_info = &mut ctx.accounts.pool_info;
         let clock = Clock::get()?;
 
-        if pool_info.end_slot > clock.slot {
+        if pool_info.end_time > clock.unix_timestamp.try_into().unwrap() {
             return Err(ErrorCode::DropEnded.into());
         }
 
@@ -101,27 +116,9 @@ pub mod solana_drop_blog {
 
         Ok(())
     }
-
-    pub fn add_items(ctx: Context<AddItem>, users_to_add: Vec<Pubkey>) -> Result<()> {
-        let white_list_info = &mut ctx.accounts.white_list_info;
-        require!(ctx.accounts.admin.key() == ctx.accounts.pool_info.admin, ErrorCode::NotEligible);
-        white_list_info.items.extend(users_to_add);
-        Ok(())
-    }
-
-    pub fn remove_item(ctx: Context<RemoveItem>, user: Pubkey) -> Result<()> {
-        let white_list_info = &mut ctx.accounts.white_list_info;
-        require!(ctx.accounts.admin.key() == ctx.accounts.pool_info.admin, ErrorCode::NotEligible);
-        if let Some(index) = white_list_info.items.iter().position(|&x| x == user) {
-            white_list_info.items.remove(index);
-        }
-        Ok(())
-    }
-
-    // Helper functions
-    pub fn is_whitelisted(whitelist: &WhiteListInfo, user_address: &Pubkey) -> bool {
-        let item_exists = whitelist.items.iter().any(|item| *item == *user_address);
-        return item_exists;
+    
+    pub fn is_whitelisted(items: Vec<Pubkey>, user_address: Pubkey) -> bool {
+        return items.iter().any(|item| *item == user_address);
     }
 }
 
@@ -148,7 +145,6 @@ pub struct Deposit<'info> {
     pub user_wallet: InterfaceAccount<'info, TokenAccount>,
     #[account(mut)]
     pub admin_drop_wallet: InterfaceAccount<'info, TokenAccount>,
-    #[account(mut)]
     pub token_program: Interface<'info, TokenInterface>,
     pub system_program: Program<'info, System>,
 }
@@ -167,8 +163,8 @@ pub struct Withdraw<'info> {
     pub user_wallet: InterfaceAccount<'info, TokenAccount>,
     #[account(mut)]
     pub admin_drop_wallet: InterfaceAccount<'info, TokenAccount>,
-    #[account(mut)]
     pub token_program: Interface<'info, TokenInterface>,
+    pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
@@ -215,8 +211,8 @@ pub struct RemoveItem<'info> {
 #[account]
 pub struct PoolInfo {
     pub admin: Pubkey,
-    pub start_slot: u64,
-    pub end_slot: u64,
+    pub start_time: u64,
+    pub end_time: u64,
     pub token: Pubkey,
     pub amount_claim: u64,
     pub total_deposit: u64,
